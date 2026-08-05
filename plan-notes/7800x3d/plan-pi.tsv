@@ -1,0 +1,30 @@
+# Raspberry Pi 4 (aarch64). Cap with MAXK=16384 (see PLAN-PI.md).
+# asimd is a SIMD carry implementation neither x86 plan touches: 217
+# ARM-guarded blocks across 71 files. Threads matter more here than on x86
+# because ARM's memory model is weakly ordered - see PLAN-PI.md.
+# mode<TAB>threads<TAB>type<TAB>shift<TAB>cc
+asimd	1	ll	0	
+asimd	1	ll	nz	
+asimd	1	prp	0	
+asimd	1	prp	nz	
+asimd	1	fermat	0	
+asimd	1	fermat	nz	
+asimd	2	ll	0	
+asimd	2	ll	nz	
+asimd	2	prp	0	
+asimd	2	prp	nz	
+asimd	2	fermat	0	
+asimd	2	fermat	nz	
+asimd	4	ll	0	
+asimd	4	ll	nz	
+asimd	4	prp	0	
+asimd	4	prp	nz	
+asimd	4	fermat	0	
+asimd	4	fermat	nz	
+# local scalar oracle: isolates ARM-SIMD defects from ARM-general ones,
+# and cross-checks bit-for-bit against the x86 boxes' nosimd sweeps
+nosimd	1	ll	0	
+nosimd	4	ll	0	
+# aarch64 + clang: #234 was aarch64 + clang-14 + -flto
+asimd	1	ll	0	clang
+asimd	4	ll	0	clang

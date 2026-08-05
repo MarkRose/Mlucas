@@ -1,7 +1,8 @@
 # Common reference for the two test plans
 
-The executable plans are **[PLAN-7800X3D.md](PLAN-7800X3D.md)** and
-**[PLAN-LAPTOP.md](PLAN-LAPTOP.md)**; each runs independently. This file holds the
+The executable plans are **[PLAN-7800X3D.md](PLAN-7800X3D.md)**,
+**[PLAN-LAPTOP.md](PLAN-LAPTOP.md)** and **[PLAN-PI.md](PLAN-PI.md)**; each runs
+independently. This file holds the
 shared measurements, methodology and scope behind both.
 
 Everything below is sized from measurements taken on the i9-10885H (AVX2, gcc 16.1.1)
@@ -13,7 +14,7 @@ on 2026-08-05, not from estimates. Assets in this directory:
 | `worklist_v4_simd.txt`, `worklist_v4_scalar.txt` | **the operative worklists** — generated against `integration-v4` |
 | `worklist_simd.txt`, `worklist_scalar.txt` | `main` worklists, kept only to document that the tables differ per tree |
 | `run-plan.sh` | executes a per-box plan; resumable across days |
-| `plan-x3d.tsv`, `plan-laptop.tsv` | the two schedules |
+| `plan-x3d.tsv`, `plan-laptop.tsv`, `plan-pi.tsv` | the three schedules |
 | `sweep.sh` | one full (length × radix set) sweep for one configuration, emits CSV |
 | `compare.sh` | the three differentials; `--selftest` proves they fire |
 
@@ -63,10 +64,10 @@ Not executable here, and not because of anything we can fix:
 |---|---|
 | `avx512_knl` | `-march=knl` emits AVX512ER/PF, which exist only on Knights Landing. Will `SIGILL` on Zen 4. Compile-only. |
 | `k1om` | IMCI512, 1st-gen Xeon Phi. Needs the MPSS cross-SDK to build and real KNC to run. Compile-only. |
-| `asimd` | ARM. Stays on podman/qemu and the Raspberry Pi. |
+| `asimd` | ARM. Covered by [PLAN-PI.md](PLAN-PI.md) on the Raspberry Pi 4 — **not** redundant with `nosimd`: 217 `USE_ARM_V8_SIMD` blocks across 71 files that no x86 plan executes. Note `USE_ARM_V8_SIMD` defines `USE_SSE2` (`platform.h:222`), so ARM shares the 598-set SIMD radix table and uses `worklist_v4_simd.txt` unchanged. |
 
-So the honest answer to "all compatible modes" is **five executable modes**, plus
-two that remain build-coverage only. SDE does not rescue the KNL pair either — SDE
+So the honest answer to "all compatible modes" is **five executable modes on x86**,
+`asimd` on the Pi, and two that remain build-coverage only. SDE does not rescue the KNL pair either — SDE
 removed `-knl`/`-knm` at 9.38, and 8.69.1 segfaults on kernel 6.18.
 
 ## 3. Measured scope of "every radix"
@@ -239,6 +240,7 @@ The work is split across the two boxes as two independent plans:
 |---|---|---|---|
 | [PLAN-7800X3D](PLAN-7800X3D.md) — `avx512`, `avx2`, `nosimd`, compiler axis | 63 | 78.3 | ~115 h (4.8 d) |
 | [PLAN-LAPTOP](PLAN-LAPTOP.md) — `sse2`, `avx`, `nosimd` baseline | 25 | 31.2 | ~154 h (6.4 d) |
+| [PLAN-PI](PLAN-PI.md) — `asimd`, `nosimd`, clang axis; capped at 16M | 22 | — | ~40 h (1.7 d, est.) |
 
 Neither reads the other's output. Each carries its own `nosimd` sweep so it can run
 the scalar-vs-SIMD differential — the most valuable of the three checks — on its own.

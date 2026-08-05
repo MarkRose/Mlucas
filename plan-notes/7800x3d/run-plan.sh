@@ -41,9 +41,12 @@ WT=$(cd "$WT" && pwd)
 mkdir -p "$OUT"
 
 # --- expected row counts, so "already done" is a fact and not a guess ----------
-rows_for() { awk -v f="$1" '!/^#/{s+=$2} END{print s}' "$HERE/$1"; }
-SIMD_ROWS=$(awk '!/^#/{s+=$2} END{print s}' "$HERE/worklist_v4_simd.txt")
-SCAL_ROWS=$(awk '!/^#/{s+=$2} END{print s}' "$HERE/worklist_v4_scalar.txt")
+# Honours MINK/MAXK, so a deliberately capped plan (the Pi runs one) stays
+# resumable instead of restarting every sweep from scratch.
+expected_rows() {
+    awk -v mn="${MINK:-1}" -v mx="${MAXK:-524288}" \
+        '!/^#/ && $1>=mn && $1<=mx {s+=$2} END{print s+0}' "$HERE/$1"
+}
 
 # --- builds -------------------------------------------------------------------
 build() { local mode=$1 cc=${2:-gcc} dir
@@ -73,12 +76,11 @@ while IFS=$'\t' read -r mode threads type shift cc; do
     [[ -z ${mode:-} || $mode == \#* ]] && continue
     tag="${mode}-t${threads}-${type}-s${shift}${cc:+-$cc}"
     cc=${cc:-gcc}
-    wl="worklist_v4_simd.txt"; want=$SIMD_ROWS
-    [[ $mode == nosimd ]] && { wl="worklist_v4_scalar.txt"; want=$SCAL_ROWS; }
+    wl="worklist_v4_simd.txt"
+    [[ $mode == nosimd ]] && wl="worklist_v4_scalar.txt"
+    want=$(expected_rows "$wl")
 
     csv="$OUT/$tag/results.csv"
-    # A truncated MAXK/MINK run must not be mistaken for a completed sweep.
-    [[ -n ${MAXK:-} || -n ${MINK:-} ]] && want=0
     if [[ -f $csv ]] && (( want > 0 )) && (( $(grep -c . "$csv") - 1 >= want )); then
         echo "[skip] $tag (complete: $((  $(grep -c . "$csv") - 1 )) rows)"; continue
     fi
