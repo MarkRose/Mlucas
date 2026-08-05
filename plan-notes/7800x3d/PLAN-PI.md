@@ -39,17 +39,24 @@ MAXK=8192 ./run-plan.sh plan-pi.tsv        # capped; the cap is resume-aware
 | `nosimd` t1 LL s0 | local oracle, and must be bit-identical to x86 `nosimd` |
 | `asimd` t1 LL s0 @ clang | the aarch64+clang axis on A72 codegen |
 
-`MAXK=8192` covers **371 of 598 radix sets (62%)**, estimated **~6 h total**. The
+`MAXK=8192` covers **371 of 598 radix sets (62%)**, estimated **~12 h total**. The
 `asimd` path is the same code at every length, so the cap costs breadth of radix
 coverage — which Graviton supplies — not depth of code coverage.
 
-If the Pi turns out faster than assumed, raise the cap:
+| cap | radix sets | est. per `asimd` sweep | est. total (7 sweeps) |
+|---|---|---|---|
+| 4M | 316 (53%) | ~0.7 h | ~6 h |
+| **8M** | **371 (62%)** | **~1.6 h** | **~12 h** |
+| 16M | 418 (70%) | ~3.0 h | ~22 h |
+| 32M | 451 (75%) | ~5.4 h | ~40 h |
 
-| cap | radix sets | est. per `asimd` sweep |
-|---|---|---|
-| **8M** | **371 (62%)** | **~0.9 h** |
-| 16M | 418 (70%) | ~1.7 h |
-| 32M | 451 (75%) | ~3.1 h |
+The `nosimd` sweep is the single most expensive cell in the plan — scalar is 3.47×
+`asimd` and runs 476 radix sets rather than 371 — so it is ~3.2 h of the ~12 h on its
+own. Drop it if you only care about the SIMD path, but it is what lets this box
+compare against x86 `nosimd` bit-for-bit.
+
+Note these figures include the **1.72× NEON factor**: ASIMD is 128-bit, so it costs
+about what SSE2 measured on the i9, not what AVX2 did.
 
 Memory is not the constraint — even a 4 GB Pi handles a single job to ~116M (RSS is
 4.4× the `k × 8 KB` array). Time is.

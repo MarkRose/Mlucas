@@ -243,7 +243,7 @@ The work is split across the two boxes as two independent plans:
 | [PLAN-7800X3D](PLAN-7800X3D.md) — `avx512`, `avx2`, `nosimd`, compiler axis | 63 | 78.3 | ~115 h (4.8 d) |
 | [PLAN-LAPTOP](PLAN-LAPTOP.md) — `sse2`, `avx`, `nosimd` baseline | 25 | 31.2 | ~154 h (6.4 d) |
 | [PLAN-GRAVITON](PLAN-GRAVITON.md) — `asimd`, `nosimd`, clang axis; **uncapped, all 598 sets** | 24 | — | ~170 h on m7g.4xlarge (~$33 spot, est.) |
-| [PLAN-PI](PLAN-PI.md) — confirmation subset on a second ARM µarch; capped at 8M | 7 | — | ~6 h (est.) |
+| [PLAN-PI](PLAN-PI.md) — confirmation subset on a second ARM µarch; capped at 8M | 7 | — | ~12 h (est.) |
 
 Neither reads the other's output. Each carries its own `nosimd` sweep so it can run
 the scalar-vs-SIMD differential — the most valuable of the three checks — on its own.
