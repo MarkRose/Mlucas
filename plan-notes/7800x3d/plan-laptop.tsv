@@ -1,0 +1,28 @@
+# Laptop: the portable mid-ISA modes, plus a local scalar oracle so this
+# box can run its own cross-mode differential without the other machine.
+# mode<TAB>threads<TAB>type<TAB>shift<TAB>cc
+sse2	1	ll	0	
+sse2	1	ll	nz	
+sse2	1	prp	0	
+sse2	1	prp	nz	
+sse2	1	fermat	0	
+sse2	1	fermat	nz	
+sse2	4	ll	0	
+sse2	4	ll	nz	
+sse2	4	prp	0	
+sse2	4	prp	nz	
+sse2	4	fermat	0	
+sse2	4	fermat	nz	
+avx	1	ll	0	
+avx	1	ll	nz	
+avx	1	prp	0	
+avx	1	prp	nz	
+avx	1	fermat	0	
+avx	1	fermat	nz	
+avx	4	ll	0	
+avx	4	ll	nz	
+avx	4	prp	0	
+avx	4	prp	nz	
+avx	4	fermat	0	
+avx	4	fermat	nz	
+nosimd	1	ll	0	
