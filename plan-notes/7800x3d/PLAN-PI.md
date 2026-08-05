@@ -27,36 +27,45 @@ cd plan-notes/7800x3d
 MAXK=8192 ./run-plan.sh plan-pi.tsv        # capped; the cap is resume-aware
 ```
 
-## Schedule — 7 sweeps, capped at 8M
+## Schedule — 24 sweeps, capped at 8M, ~39 h
 
-| sweep | why it is in the subset |
-|---|---|
-| `asimd` t1 LL s0 | baseline; the cell every other result is read against |
-| `asimd` t4 LL s0 | multithreaded on A72 — weak ordering on the second µarch |
-| `asimd` t4 LL s-nz | shift dimension (#152, #231, #232, #190) under threads |
-| `asimd` t4 PRP s0 | the other Mersenne test type |
-| `asimd` t1 Fermat s0 | Pépin path (#232 is Fermat + nonzero shift) |
-| `nosimd` t1 LL s0 | local oracle, and must be bit-identical to x86 `nosimd` |
-| `asimd` t1 LL s0 @ clang | the aarch64+clang axis on A72 codegen |
+**Why a modest cap and many dimensions, rather than the reverse.** The ARM code
+surface is **34 distinct leading radices × 2 trailing DFT radices (16 and 32)**, and
+*all* of it is reachable at a **4M** cap. Measured by enumerating every radix set:
 
-`MAXK=8192` covers **371 of 598 radix sets (62%)**, estimated **~12 h total**. The
-`asimd` path is the same code at every length, so the cap costs breadth of radix
-coverage — which Graviton supplies — not depth of code coverage.
-
-| cap | radix sets | est. per `asimd` sweep | est. total (7 sweeps) |
+| cap | radix sets | distinct leading radices | distinct trailing radices |
 |---|---|---|---|
-| 4M | 316 (53%) | ~0.7 h | ~6 h |
-| **8M** | **371 (62%)** | **~1.6 h** | **~12 h** |
-| 16M | 418 (70%) | ~3.0 h | ~22 h |
-| 32M | 451 (75%) | ~5.4 h | ~40 h |
+| 4M | 316 (53%) | **34 (all)** | **2 (all)** |
+| 8M | 371 (62%) | 34 | 2 |
+| 32M | 451 (75%) | 34 | 2 |
+| uncapped | 598 | 34 | 2 |
 
-The `nosimd` sweep is the single most expensive cell in the plan — scalar is 3.47×
-`asimd` and runs 476 radix sets rather than 371 — so it is ~3.2 h of the ~12 h on its
-own. Drop it if you only care about the SIMD path, but it is what lets this box
-compare against x86 `nosimd` bit-for-bit.
+Past 4M, a longer FFT does not reach new code — it chains more radix-16/32 passes
+through the same macros. So raising the cap buys more (length, radset) combinations of
+identical code, while Graviton is already covering all 598 of them uncapped. Spending
+the same hours on **dimensions** is worth more here, because thread count, test type
+and shift each select genuinely different code paths.
 
-Note these figures include the **1.72× NEON factor**: ASIMD is 128-bit, so it costs
-about what SSE2 measured on the i9, not what AVX2 did.
+8M rather than 4M keeps a comfortable margin above the point where coverage completes,
+and adds the longer-pass-chain cases for roughly 2 h.
+
+| block | modes | threads | types | shifts | sweeps | est. |
+|---|---|---|---|---|---|---|
+| ASIMD full factorial | `asimd` | 1, 2, 4 | LL, PRP, Fermat | 0, nz | 18 | 23.0 h |
+| Scalar oracle | `nosimd` | 1, 4 | LL | 0, nz | 4 | 12.8 h |
+| clang axis | `asimd` @ clang | 1, 4 | LL | 0 | 2 | 3.2 h |
+| | | | | | **24** | **39.0 h** |
+
+This is a *full factorial* over threads × type × shift on A72 — strictly more than the
+7-cell subset it replaces, for the same wall clock.
+
+If you would rather have the length coverage, it is one variable: `MAXK=32768` gives
+451 sets (75%) but costs ~40 h for the original 7 cells only. Per-sweep costs at other
+caps: ~0.7 h (4M), ~1.6 h (8M), ~3.0 h (16M), ~5.4 h (32M) for `asimd`; `nosimd` is
+~2× that, being 3.47× the cost over 476 radix sets rather than 371.
+
+These figures include the **1.72× NEON factor**: ASIMD is 128-bit, so it costs about
+what SSE2 measured on the i9, not what AVX2 did.
 
 Memory is not the constraint — even a 4 GB Pi handles a single job to ~116M (RSS is
 4.4× the `k × 8 KB` array). Time is.

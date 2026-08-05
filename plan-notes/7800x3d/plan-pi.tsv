@@ -1,13 +1,35 @@
-# Plan C - Raspberry Pi 4. A CONFIRMATION SUBSET, not a full sweep: Graviton
-# (Plan D) covers ARM breadth. This box exists for a second microarchitecture -
-# Cortex-A72, ARMv8.0-A, built with -mcpu=cortex-a72 - where Graviton is
-# Neoverse ARMv8.2+. Different silicon AND different generated code.
-# Run capped: MAXK=8192 ./run-plan.sh plan-pi.tsv
+# Plan C - Raspberry Pi 4. Second-microarchitecture confirmation for ARM.
+# Breadth of radix coverage is Graviton's job (Plan D, all 598 sets uncapped).
+# This box spends its budget on DIMENSIONS at a modest cap instead, because
+# all 34 distinct leading radices and both trailing DFT radices (16, 32) are
+# already reachable at a 4M cap - beyond that, longer FFTs only chain more
+# radix-16/32 passes through the same macros. See PLAN-PI.md.
+# Run: MAXK=8192 ./run-plan.sh plan-pi.tsv      (~39 h)
 # mode<TAB>threads<TAB>type<TAB>shift<TAB>cc
 asimd	1	ll	0	
+asimd	1	ll	nz	
+asimd	1	prp	0	
+asimd	1	prp	nz	
+asimd	1	fermat	0	
+asimd	1	fermat	nz	
+asimd	2	ll	0	
+asimd	2	ll	nz	
+asimd	2	prp	0	
+asimd	2	prp	nz	
+asimd	2	fermat	0	
+asimd	2	fermat	nz	
 asimd	4	ll	0	
 asimd	4	ll	nz	
 asimd	4	prp	0	
-asimd	1	fermat	0	
+asimd	4	prp	nz	
+asimd	4	fermat	0	
+asimd	4	fermat	nz	
+# scalar oracle: isolates ARM-SIMD from ARM-general, and must be bit-identical
+# to the x86 boxes' nosimd sweeps
 nosimd	1	ll	0	
+nosimd	1	ll	nz	
+nosimd	4	ll	0	
+nosimd	4	ll	nz	
+# aarch64 + clang on cortex-a72 codegen (#234 was aarch64 + clang-14 + -flto)
 asimd	1	ll	0	clang
+asimd	4	ll	0	clang
