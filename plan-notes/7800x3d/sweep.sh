@@ -112,14 +112,17 @@ run_one() {
 # each result lands sooner, and multithreaded large-FFT runs exercise the
 # carry-thread paths where #207 and #152 lived. Deterministic, so cross-config
 # comparison stays apples-to-apples as long as every config uses the same policy.
-auto_threads() { local k=$1
-    if   (( k <=  65536 )); then echo 1
-    elif (( k <= 262144 )); then echo 4
-    else                         echo 8
+auto_threads() { local k=$1 t
+    if   (( k <=  65536 )); then t=1
+    elif (( k <= 262144 )); then t=4
+    else                         t=8
     fi
+    # Never oversubscribe: a 4-core Pi must not be handed 8 threads.
+    (( t > JOBS )) && t=$JOBS
+    echo "$t"
 }
 export -f run_one auto_threads
-export BIN TAG OUT TYPE THREADS SHIFT ITERS TIMEOUT CSV
+export BIN TAG OUT TYPE THREADS SHIFT ITERS TIMEOUT CSV JOBS
 
 # Expand the worklist into (kblocks, radset, exponent) triples, bucketed by size.
 #
