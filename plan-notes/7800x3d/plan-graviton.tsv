@@ -1,0 +1,33 @@
+# Plan D - AWS Graviton (m7g). Full range, NO cap: this box exists to cover
+# all 598 ASIMD radix sets that the Pi cannot reach in reasonable time.
+# Thread-heavy by design: ARMv8 is weakly ordered and Neoverse is aggressively
+# out-of-order, so high thread counts are the point, not a side dimension.
+# mode<TAB>threads<TAB>type<TAB>shift<TAB>cc
+asimd	1	ll	0	
+asimd	1	ll	nz	
+asimd	1	prp	0	
+asimd	1	prp	nz	
+asimd	1	fermat	0	
+asimd	1	fermat	nz	
+asimd	4	ll	0	
+asimd	4	ll	nz	
+asimd	4	prp	0	
+asimd	4	prp	nz	
+asimd	4	fermat	0	
+asimd	4	fermat	nz	
+asimd	16	ll	0	
+asimd	16	ll	nz	
+asimd	16	prp	0	
+asimd	16	prp	nz	
+asimd	16	fermat	0	
+asimd	16	fermat	nz	
+# thread-scaling ladder at the baseline config, to localise any thread-count
+# dependence to a specific degree of concurrency
+asimd	2	ll	0	
+asimd	8	ll	0	
+# scalar oracle: isolates ARM-SIMD from ARM-general, and must match x86 nosimd
+nosimd	1	ll	0	
+nosimd	16	ll	0	
+# aarch64 + clang (#234 was aarch64 + clang-14 + -flto)
+asimd	1	ll	0	clang
+asimd	16	ll	0	clang
