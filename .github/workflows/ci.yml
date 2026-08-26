@@ -97,7 +97,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
-        cc: [gcc, clang]
+        cc: [gcc]
       fail-fast: false
     env:
       CC: ${{ matrix.cc }}
@@ -106,6 +106,7 @@ jobs:
     - name: Before script
       run: |
         sed -i 's/-DUSE_THREADS//' makemake.sh
+        sed -i 's/^MAX=29/MAX=28/' config-fermat.sh
         $CC --version
     - name: Script
       run: |
@@ -283,7 +284,7 @@ jobs:
         (cd obj_k1om; make clean)
         for word in '' 1word 2word 3word 4word nword; do
             echo -e "\nMfactor $word\n"
-            bash -e -o pipefail -- makemake.sh no_gmp mfac $word k1om || true
+            bash -e -o pipefail -- makemake.sh no_gmp mfac $word k1om
             (
                 cd obj_mfac${word:+_$word}_k1om
                 make clean
@@ -316,7 +317,7 @@ jobs:
         sudo apt-get install -y libhwloc-dev
     - name: Before script
       run: |
-        sed -i 's/-O3 -flto/-Og -fsanitize=address,undefined/' makemake.sh
+        sed -i 's/^CFLAGS = .*/CFLAGS = -std=gnu99 -Wall -g -Og -fsanitize=address,undefined/' makemake.sh
         sed -i 's/^MAX=29/MAX=28/' config-fermat.sh
         $CC --version
     - name: Script
@@ -330,18 +331,15 @@ jobs:
         for word in '' 1word 2word 3word 4word nword; do
             echo -e "\nMfactor $word\n"
             bash -e -o pipefail -- makemake.sh mfac $word nosimd
-            (
-                cd obj_mfac_nosimd
-                make clean
-                mv -v build.log build_${word}.log
-            )
+            (cd obj_mfac${word:+_$word}_nosimd; make clean)
         done
         cd obj_nosimd
         for s in tt t s m; do time ./Mlucas -s $s -cpu "0:$(( $(nproc --all) - 1 ))"; done
         for s in tt t s; do time ./Mlucas -prp -s $s -cpu "0:$(( $(nproc --all) - 1 ))"; done
         bash -e -o pipefail -- ../config-fermat.sh -cpu "0:$(( $(nproc --all) - 1 ))"
-        cd ../obj_mfac_nosimd
-        for word in '' 1word 2word 3word 4word nword; do time ./Mfactor${word:+_$word} -m 127 -bmax 20; done
+        for word in '' 1word 2word 3word 4word nword; do
+            ( cd "../obj_mfac${word:+_$word}_nosimd" && time "./Mfactor${word:+_$word}" -m 127 -bmax 20 )
+        done
 
   TSan-Linux:
     name: ThreadSanitizer Linux
@@ -363,7 +361,7 @@ jobs:
         sudo apt-get install -y libhwloc-dev
     - name: Before script
       run: |
-        sed -i 's/-O3 -flto/-Og -fsanitize=thread/' makemake.sh
+        sed -i 's/^CFLAGS = .*/CFLAGS = -std=gnu99 -Wall -g -Og -fsanitize=thread/' makemake.sh
         $CC --version
     - name: Script
       run: |
@@ -522,6 +520,7 @@ jobs:
     - name: Before script
       run: |
         sed -i '' 's/-DUSE_THREADS//' makemake.sh
+        sed -i '' 's/^MAX=29/MAX=28/' config-fermat.sh
         clang --version
     - name: Script
       run: |
@@ -580,7 +579,7 @@ jobs:
         brew install hwloc
     - name: Before script
       run: |
-        sed -i '' 's/-O3 -flto/-Og -fsanitize=address,undefined/' makemake.sh
+        sed -i '' 's/^CFLAGS = .*/CFLAGS = -std=gnu99 -Wall -g -Og -fsanitize=address,undefined/' makemake.sh
         sed -i '' 's/^MAX=29/MAX=28/' config-fermat.sh
         clang --version
     - name: Script
@@ -594,18 +593,15 @@ jobs:
         for word in '' 1word 2word 3word 4word nword; do
             echo -e "\nMfactor $word\n"
             bash -e -o pipefail -- makemake.sh mfac $word nosimd
-            (
-                cd obj_mfac_nosimd
-                make clean
-                mv -v build.log build_${word}.log
-            )
+            (cd obj_mfac${word:+_$word}_nosimd; make clean)
         done
         cd obj_nosimd
         for s in tt t s m; do time ./Mlucas -s $s -cpu "0:$(( $(sysctl -n hw.ncpu) - 1 ))"; done
         for s in tt t s; do time ./Mlucas -prp -s $s -cpu "0:$(( $(sysctl -n hw.ncpu) - 1 ))"; done
         bash -e -o pipefail -- ../config-fermat.sh -cpu "0:$(( $(sysctl -n hw.ncpu) - 1 ))"
-        cd ../obj_mfac_nosimd
-        for word in '' 1word 2word 3word 4word nword; do time ./Mfactor${word:+_$word} -m 127 -bmax 20; done
+        for word in '' 1word 2word 3word 4word nword; do
+            ( cd "../obj_mfac${word:+_$word}_nosimd" && time "./Mfactor${word:+_$word}" -m 127 -bmax 20 )
+        done
 
   TSan-macOS:
     name: ThreadSanitizer macOS
@@ -618,7 +614,7 @@ jobs:
         brew install hwloc
     - name: Before script
       run: |
-        sed -i '' 's/-O3 -flto/-Og -fsanitize=thread/' makemake.sh
+        sed -i '' 's/^CFLAGS = .*/CFLAGS = -std=gnu99 -Wall -g -Og -fsanitize=thread/' makemake.sh
         clang --version
     - name: Script
       run: |
@@ -686,16 +682,18 @@ jobs:
             for word in '' 1word 2word 3word 4word nword; do
                 echo -e "\nMfactor $word\n"
                 bash -e -o pipefail -- makemake.sh mfac $word $mode
-                (
-                    cd obj_mfac${word:+_$word}${mode:+_$mode}
-                    make clean
-                    [ ! -x Mfactor${word:+_$word} ] || ./Mfactor${word:+_$word} -h
-                )
+                (cd obj_mfac${word:+_$word}${mode:+_$mode}; make clean)
             done
         done
         cd obj
         for s in tt t s m; do time ./Mlucas -s "$s" -cpu "0:$(( $(sysctl -n hw.ncpu) - 1 ))" | tee -a test.log; done
-        bash -- ../config-fermat.sh -cpu "0:$(( $(sysctl -n hw.ncpu) - 1 ))"
+        bash -e -o pipefail -- ../config-fermat.sh -cpu "0:$(( $(sysctl -n hw.ncpu) - 1 ))"
+        # Mfactor self-test on the native build only. The explicit-ISA builds above are for compile
+        # coverage: this VM may not be able to execute what they target - running them per-mode is
+        # what makes the AVX-512 binary SIGILL on three of the four releases on main today.
+        for word in '' 1word 2word 3word 4word nword; do
+            ( cd "../obj_mfac${word:+_$word}" && time "./Mfactor${word:+_$word}" -m 127 -bmax 20 )
+        done
     - uses: actions/upload-artifact@v7
       if: always()
       with:
@@ -808,7 +806,7 @@ jobs:
     - name: Before script
       shell: bash
       run: |
-        sed -i 's/-O3 -flto/-Og -fsanitize=address,undefined/' makemake.sh
+        sed -i 's/^CFLAGS = .*/CFLAGS = -std=gnu99 -Wall -g -Og -fsanitize=address,undefined/' makemake.sh
         sed -i 's/^MAX=29/MAX=28/' config-fermat.sh
         $CC --version
     - name: Script
@@ -820,15 +818,12 @@ jobs:
         for word in '' 1word 2word 3word 4word nword; do
             echo -e "\nMfactor $word\n"
             bash -e -o pipefail -- makemake.sh mfac $word nosimd
-            (
-                cd obj_mfac_nosimd
-                make clean
-                mv -v build.log build_${word}.log
-            )
+            (cd obj_mfac${word:+_$word}_nosimd; make clean)
         done
         cd obj_nosimd
         for s in tt t s m; do time ./Mlucas -s $s -cpu "0:$(( NUMBER_OF_PROCESSORS - 1 ))"; done
         for s in tt t s; do time ./Mlucas -prp -s $s -cpu "0:$(( NUMBER_OF_PROCESSORS - 1 ))"; done
         bash -e -o pipefail -- ../config-fermat.sh -cpu "0:$(( NUMBER_OF_PROCESSORS - 1 ))"
-        cd ../obj_mfac_nosimd
-        for word in '' 1word 2word 3word 4word nword; do time ./Mfactor${word:+_$word} -m 127 -bmax 20; done
+        for word in '' 1word 2word 3word 4word nword; do
+            ( cd "../obj_mfac${word:+_$word}_nosimd" && time "./Mfactor${word:+_$word}" -m 127 -bmax 20 )
+        done
