@@ -58,8 +58,11 @@ uint32 SYSTEM_RAM = 0;	// Total usable main memory size in MB, and max. % of tha
 
 // Used to force local-data-tables-reinits in cases of suspected table-data corruption:
 int REINIT_LOCAL_DATA_TABLES = 0;
-// Normally = True; set = False on quit-signal-received to allow desired code sections to and take appropriate action:
-int MLUCAS_KEEP_RUNNING = 1;
+// Normally = True; set = False on quit-signal-received to allow desired code sections to and take appropriate action.
+// volatile sig_atomic_t: written by the async signal handler, polled by the main control loop (see Mdata.h note).
+volatile sig_atomic_t MLUCAS_KEEP_RUNNING = 1;
+// Signal number of a received graceful-quit signal, so the main thread can report it safely (0 = none):
+volatile sig_atomic_t MLUCAS_INTERRUPT_SIGNO = 0;
 // v18: Enable savefile-on-interrupt-signal, access to argc/argv outside main():
 char **global_argv;
 
@@ -225,27 +228,83 @@ uint64 PMAX;		/* maximum exponent allowed depends on max. FFT length allowed
 /****** END(Allocate storage for Globals (externs)). ******/
 
 #ifndef NO_USE_SIGNALS
+	/*
+	Async-signal-safe graceful-quit handler.
+
+	ROOT CAUSE of the Dec-2021 "runs that have been underway for a day or more refuse to quit"
+	instability (which led to this savefile-on-interrupt feature being disabled): a signal handler
+	runs on whatever thread the kernel happens to deliver the signal to, asynchronously interrupting
+	whatever that thread was doing at that instant. POSIX permits a handler to call ONLY async-signal-safe
+	functions (see signal-safety(7)). The old handler violated this badly - it called fprintf() and
+	sprintf() (into the shared global cbuf) and then exit(). All three are unsafe:
+	  - fprintf/sprintf take the stdio lock and can call malloc();
+	  - exit() flushes all stdio streams and runs atexit() handlers.
+	If the signal was delivered to an FFT worker thread (all threads had these signals unblocked) that
+	happened to already hold the malloc arena lock or a stdio lock - very likely, since the workers are
+	the threads doing nearly all the CPU work - the handler would deadlock on that non-recursive lock and
+	the entire process would hang forever. Because *which* thread receives the signal is nondeterministic,
+	the hang was intermittent: exactly the "run-to-run inconsistency" that was reported. sprintf() into the
+	shared cbuf also races the main thread's concurrent use of that same buffer.
+
+	The fix has three parts:
+	  (1) This handler now does NOTHING but store the signal number and clear the keep-running flag - both
+	      volatile sig_atomic_t, the only data the C standard lets a handler safely touch. No stdio, no
+	      malloc, no exit(): nothing that can take a lock, so it cannot deadlock no matter which thread or
+	      instruction it interrupts.
+	  (2) All user messaging and the (consistent, last-completed-iteration) savefile write are deferred to
+	      the main-thread control loop, which polls MLUCAS_KEEP_RUNNING at a safe point between mod-squaring
+	      iterations.
+	  (3) Because of (1) it does not matter which thread the kernel picks to run the handler: a
+	      process-directed signal goes to any thread not blocking it, and every one of them can safely
+	      execute these two stores. The main thread is the one that acts on the flag.
+	*/
 	void sig_handler(int signo)
 	{
-		if (signo == SIGINT) {
-			fprintf(stderr,"received SIGINT signal.\n");	sprintf(cbuf,"received SIGINT signal.\n");
-		} else if(signo == SIGTERM) {
-			fprintf(stderr,"received SIGTERM signal.\n");	sprintf(cbuf,"received SIGTERM signal.\n");
-	#ifndef __MINGW32__
-		} else if(signo == SIGHUP) {
-			fprintf(stderr,"received SIGHUP signal.\n");	sprintf(cbuf,"received SIGHUP signal.\n");
-		} else if(signo == SIGALRM) {
-			fprintf(stderr,"received SIGALRM signal.\n");	sprintf(cbuf,"received SIGALRM signal.\n");
-		} else if(signo == SIGUSR1) {
-			fprintf(stderr,"received SIGUSR1 signal.\n");	sprintf(cbuf,"received SIGUSR1 signal.\n");
-		} else if(signo == SIGUSR2) {
-			fprintf(stderr,"received SIGUSR2 signal.\n");	sprintf(cbuf,"received SIGUSR2 signal.\n");
-	#endif
-		}
-	// Dec 2021: Until resolve run-to-run inconsistencies in signal handling, kill it with fire:
-	exit(1);
-		// Toggle a global to allow desired code sections to detect signal-received and take appropriate action:
-		MLUCAS_KEEP_RUNNING = 0;
+		MLUCAS_INTERRUPT_SIGNO = signo;	// Record which signal, for the main thread to report safely later
+		MLUCAS_KEEP_RUNNING = 0;		// The main control loop polls this between iterations and quits gracefully
+	}
+
+	/*
+	Install sig_handler for the graceful-quit signals. Called from the mod-squaring functions; the static
+	'installed' guard makes it a no-op after the first call, so it runs exactly once, on the main thread.
+
+	We use sigaction() rather than signal() for deterministic, portable semantics:
+	  - sa_mask blocks the other quit-signals while the handler runs, so two signals racing in can't
+	    interleave the (trivial) flag stores;
+	  - SA_RESTART makes interrupted library calls auto-resume instead of failing with EINTR;
+	  - the handler stays installed after firing (signal() gives this on glibc but not on strict SysV).
+	The handler may run on any thread the kernel selects; that is safe because it only stores to two
+	volatile sig_atomic_t flags, which the main-thread control loop then acts on.
+	*/
+	void mlucas_install_signal_handlers(void)
+	{
+		static int installed = 0;
+		if(installed) return;
+		installed = 1;
+
+	#ifdef __MINGW32__
+		// Windows/MinGW has no sigaction(); fall back to signal() for the signals it supports:
+		if(signal(SIGINT , sig_handler) == SIG_ERR) fprintf(stderr,"Can't catch SIGINT.\n");
+		if(signal(SIGTERM, sig_handler) == SIG_ERR) fprintf(stderr,"Can't catch SIGTERM.\n");
+	#else
+		struct sigaction sa;
+		memset(&sa, 0, sizeof sa);
+		sa.sa_handler = sig_handler;
+		sa.sa_flags = SA_RESTART;
+		sigemptyset(&sa.sa_mask);
+		sigaddset(&sa.sa_mask, SIGINT);
+		sigaddset(&sa.sa_mask, SIGTERM);
+		sigaddset(&sa.sa_mask, SIGHUP);
+		sigaddset(&sa.sa_mask, SIGALRM);
+		sigaddset(&sa.sa_mask, SIGUSR1);
+		sigaddset(&sa.sa_mask, SIGUSR2);
+		if(sigaction(SIGINT , &sa, 0x0)) fprintf(stderr,"Can't catch SIGINT.\n");
+		if(sigaction(SIGTERM, &sa, 0x0)) fprintf(stderr,"Can't catch SIGTERM.\n");
+		if(sigaction(SIGHUP , &sa, 0x0)) fprintf(stderr,"Can't catch SIGHUP.\n");
+		if(sigaction(SIGALRM, &sa, 0x0)) fprintf(stderr,"Can't catch SIGALRM.\n");
+		if(sigaction(SIGUSR1, &sa, 0x0)) fprintf(stderr,"Can't catch SIGUSR1.\n");
+		if(sigaction(SIGUSR2, &sa, 0x0)) fprintf(stderr,"Can't catch SIGUSR2.\n");
+	#endif	// __MINGW32__ ? signal() : sigaction()
 	}
 #endif
 
@@ -1322,8 +1381,15 @@ with the default #threads = 1 and affinity set to logical core 0, unless user ov
 			/* Only allow lengths that are <= 2x default */
 			if( !(i >= kblocks && i <= (kblocks<<1) ) )
 			{
-				sprintf(cbuf,"Call to get_preferred_fft_radix returns out-of-range FFT length: asked for %u, returned %u, packed value= %#8X\n", kblocks, i, dum);
-				ASSERT(0, cbuf);
+				/* Should be unreachable now that get_preferred_fft_radix() itself bounds its
+				cfg-file scan to i <= 2*kblocks, but guard defensively rather than asserting/
+				crashing on a stale or hand-edited cfg file: warn and treat this the same as
+				a "not found" (dum == 0) result above, i.e. request a fresh timing self-test
+				for the requested length rather than trusting the out-of-range entry.
+				*/
+				snprintf(cbuf,sizeof(cbuf),"WARN: get_preferred_fft_radix returned out-of-range FFT length: asked for %u, returned %u, packed value= %#8X -- ignoring and treating as 'not found' in '%s'; please rerun the self-test for this length.\n", kblocks, i, dum, CONFIGFILE);
+				fprintf(stderr, "%s", cbuf);
+				if (!fft_length || MODULUS_TYPE == MODULUS_TYPE_MERSENNE) return ERR_RUN_SELFTEST_FORLENGTH + (kblocks << 8);
 			}
 			else	/* If length acceptable, extract the FFT-radix data encoded and populate the NRADICES and RADIX_VEC[] globals */
 			{
@@ -1650,6 +1716,21 @@ READ_RESTART_FILE:
 		if(TEST_TYPE == TEST_TYPE_PM1) {
 			ASSERT(RES_SHIFT == 0ull, "Shifted residues unsupported for p-1!\n");
 			RES_SHIFT = 0ull; a[0] = iseed;
+		} else if(RADIX_VEC[0] < 16) {
+			// v21 (#119): The CY (carry) routines for a leading FFT radix < 16 do not support nonzero
+			// residue shifts - they WARN + return ERR_ASSERT on RES_SHIFT != 0 (see e.g. the guard at the
+			// top of radix8_ditN_cy_dif1.c). Fermat-mod, however, applies a random default shift whenever
+			// the user specifies none, so a leading-radix-<16 radix set (e.g. the 2K {8,8,16} set) would
+			// abort mid-carry-step even for an otherwise-valid production invocation, and even an explicit
+			// '-shift 0' does not help in the cases where the shift is (re)randomized below. So for a leading
+			// radix < 16, force shift 0 - as in the p-1 branch above, a zero shift simply routes the initial
+			// seed straight into a[0] - and if a nonzero shift was requested (explicitly via -shift, or
+			// implicitly via the Fermat-mod random default), emit an informational note rather than aborting:
+			if(parse_cmd_args_get_shift_value() != 0ull) {	// != 0 catches both an explicit nonzero -shift and -1 = "-shift unspecified" (=> would-be random)
+				snprintf(cbuf,sizeof(cbuf), "INFO: Leading FFT radix %u is < 16, which does not support shifted residues; setting residue shift = 0.\n", RADIX_VEC[0]);
+				mlucas_fprint(cbuf,-INTERACT);
+			}
+			RES_SHIFT = 0ull; a[0] = iseed;
 		} else {
 			// Apply initial-residue shift - if user has not set one via cmd-line or current value >= p, randomly choose a value in [0,p).
 			// [Note that the RNG is inited as part of the standard program-start-sequence, via function host_init().]
@@ -1861,8 +1942,12 @@ READ_RESTART_FILE:
 					/* If interrupt *and* we're past the first subinterval, need to undo initial-fwd-FFT-pass and DWT-weighting on b[],
 					whose value will reflect the last multiple-of-ITERS_BETWEEN_GCHECK_UPDATES iteration - prior to writing it,
 					along with the current PRP residue, to savefile: */
+					// This b[]-undo is only to make b[] savefile-consistent for the ensuing interrupt
+					// checkpoint-write; it must NOT clobber ierr, which has to stay ERR_INTERRUPT so the
+					// downstream savefile-write-and-exit handling fires (else the interrupt is lost and the
+					// PRP test spins to maxiter and aborts in the post-test residue step). Discard its return:
 					if(ierr == ERR_INTERRUPT && !first_sub)
-						ierr = func_mod_square  (b, (int*)arrtmp, n, i,i+1, 8ull, p, scrnFlag, &tdif2, FALSE, 0x0);
+						(void)func_mod_square  (b, (int*)arrtmp, n, i,i+1, 8ull, p, scrnFlag, &tdif2, FALSE, 0x0);
 					break;
 				}
 				/* At end of each subinterval, do a single modmul of current residue a[] with Gerbicz-checkproduct to update the latter:
@@ -2041,15 +2126,30 @@ READ_RESTART_FILE:
 		if(INTERACT && (ierr == ERR_INTERRUPT))
 			exit(0);
 
-		// In non-interactive (production-run) mode, write savefiles and exit gracefully on signal:
+		// In non-interactive (production-run) mode, write a consistent savefile and exit gracefully on signal.
+		// This block runs on the main thread at a safe point: the inner mod-squaring loop exited cleanly
+		// *between* squarings (it polls MLUCAS_KEEP_RUNNING every iteration), so the residue just converted
+		// into arrtmp[] above is the exact last-completed-iteration residue - nothing is torn or in-flight.
+		// We do NOT exit here: we fall through to the normal checkpoint-write code below (which then does
+		// 'if(ierr == ERR_INTERRUPT) exit(0);' after the savefile has been safely written and fclosed).
 		if(ierr == ERR_INTERRUPT) {
-			// First print the signal-handler-generated message:
+			ihi = ROE_ITER;	// Last-iteration-completed-before-interrupt saved here; savefile is written for this iter
+			// Report the signal safely here on the main thread (the async handler only recorded the number):
+			const char *signame;
+			switch(MLUCAS_INTERRUPT_SIGNO) {
+				case SIGINT:  signame = "SIGINT";  break;
+				case SIGTERM: signame = "SIGTERM"; break;
+			#ifndef __MINGW32__
+				case SIGHUP:  signame = "SIGHUP";  break;
+				case SIGALRM: signame = "SIGALRM"; break;
+				case SIGUSR1: signame = "SIGUSR1"; break;
+				case SIGUSR2: signame = "SIGUSR2"; break;
+			#endif
+				default:      signame = "unknown"; break;
+			}
+			snprintf(cbuf,sizeof(cbuf),"Received %s signal: writing savefile at Iter = %u and exiting.\n",signame,ihi);
 			mlucas_fprint(cbuf,1);
-			ihi = ROE_ITER;	// Last-iteration-completed-before-interrupt saved here
-		/*** Nov 2021: interrupt-handling still not stable ... runs that have been underway for a day or more refuse to quit. Just clean-exit w/o savefile write for now: ***/
-		//	sprintf(cbuf,"Iter = %u: Writing savefiles and exiting.\n",ihi);
-			sprintf(cbuf,"Exiting at Iter = %u.\n",ihi); mlucas_fprint(cbuf,1);
-			exit(1);
+			// Fall through to the checkpoint-write path below.
 		}
 
 		/*...Done?	*/
@@ -2694,7 +2794,10 @@ PM1_STAGE2:	// Stage 2 invocation is several hundred lines below, but this needs
 				// types via bit tests, not equality or (as used pre-bitmask, to work around distinct hits of the
 				// same error type within one batch summing to an integer multiple of it) modulo tests:
 				if(ierr == ERR_INTERRUPT) {
-					// First print the signal-handler-generated message:
+					// p-1 stage 2 does its own interior checkpointing (see pm1.c); on interrupt we resume
+					// from the last stage-2 checkpoint, so just report and exit. The async handler only
+					// recorded the signal number, so build the message here on the main thread:
+					snprintf(cbuf,sizeof(cbuf),"Received quit signal (%d) in p-1 stage 2: exiting; will resume from last stage-2 checkpoint.\n",(int)MLUCAS_INTERRUPT_SIGNO);
 					mlucas_fprint(cbuf,1);
 					exit(1);
 				} else if(ierr & (1<<ERR_ROUNDOFF)) {	// One or more modmuls hit a roundoff error - bump FFT length and restart
@@ -4163,19 +4266,32 @@ just below the upper limit for each FFT lengh in some subrange of the self-tests
 				ASSERT(i64arg < 20, "radset-index argument must be < 2^32 ... halting.");
 				radset = (uint32)i64arg;
 			} else {	// It's a set of complex-FFT radices
+				// One pass over the comma-separated list, bounding the count as we go: stFlag is
+				// STR_MAX_LEN bytes, so a user-supplied -radset arg can hold hundreds of tokens while
+				// rvec[]/rvec2[] hold ten, and the radix-product and FFT-length checks further down
+				// only run once every store has been made - far too late to prevent the overflow.
+				// The last token has no trailing comma, so the loop handles it and then exits.
+				// Derive the capacity from the array itself so the bound cannot drift from it:
+				const uint32 max_rad = sizeof(rvec)/sizeof(rvec[0]);
 				numrad = 0;
-				while(0x0 != (cptr = strchr(char_addr,','))) {
-					// Copy substring into cbuf and null-terminate:
-					strncpy(cbuf,char_addr,(cptr-char_addr));	cbuf[cptr-char_addr] = '\0';
+				for(;;) {
+					cptr = strchr(char_addr,',');
+					if(cptr) {	// Copy substring into cbuf and null-terminate:
+						strncpy(cbuf,char_addr,(cptr-char_addr));	cbuf[cptr-char_addr] = '\0';
+					} else {	// A properly formatted radix-set arg ends with ',[numeric]':
+						strcpy(cbuf,char_addr);
+					}
 					// Convert current radix to long and sanity-check:
 					i64arg = atoll(cbuf);	ASSERT(!(i64arg>>12), "user-supplied radices must be < 2^12 ... halting.");
+					if(numrad >= max_rad) {
+						sprintf(cbuf  , "ERROR: -radset argument specifies more than the %u complex-FFT radices supported.\n",max_rad);
+						fprintf(stderr,"%s", cbuf);	ASSERT(0,cbuf);
+					}
 					rvec[numrad++] = (uint32)i64arg;
+					if(!cptr) break;
 					char_addr = cptr+1;
 				}
-				// A properly formatted radix-set arg will end with ',[numeric]', with the numeric in char_addr:
-				i64arg = atoll(char_addr);	ASSERT(!(i64arg>>12), "user-supplied radices must be < 2^12 ... halting.");
-				rvec[numrad++] = (uint32)i64arg;
-				rvec[numrad] = 0;	// Null-terminate the vector just for aesthetics
+				if(numrad < max_rad) { rvec[numrad] = 0; }	// Null-terminate the vector just for aesthetics, if there is room for a terminator
 				// Compute the radix product and make sure it's < 2^30, constraint due to the (fftlen < 2^31) one:
 				rad_prod = 1; i64arg = 1ull;
 				for(i = 0; i < numrad; i++) {
@@ -4193,7 +4309,7 @@ just below the upper limit for each FFT lengh in some subrange of the self-tests
 				// in which case j holds #radices and rvec2[] holds the corresponding radices on return.
 				// Note that get_fft_radices takes real-FFT length in terms of Kdoubles:
 				i = 0;
-				while(!get_fft_radices(fftlen, i++, (uint32 *)&j, rvec2, 10)) {	// 0-return means radset index is in range
+				while(!get_fft_radices(fftlen, i++, (uint32 *)&j, rvec2, (int)max_rad)) {	// 0-return means radset index is in range
 					if(j != numrad) continue;
 					// #radices matches, see if actual complex radices do
 					for(j = 0; j < numrad; j++) {
@@ -5857,10 +5973,13 @@ int 	convert_res_bytewise_FP(const uint8 ui64_arr_in[], double a[], int n, const
 	into the LS word of the residue (e.g. if cy = 1, this amounts to subtracting
 	the modulus from the positive-digit form to get the balanced-digit form):
 	*/
-	/* Should have carryout of +1 Iff MS word < 0; otherwise expect 0 carry: */
-	if(cy && (a[j1] >= 0 || cy != +1))
+	/* Should have carryout of +1 Iff MS word <= 0; otherwise expect 0 carry.
+	(MS word == 0 with cy = 1 is a legal boundary case: an all-1-bits top digit
+	plus an incoming carry of 1 normalizes to 0 with carryout 1 - the a[0] += cy
+	fold below handles that correctly, same as the MS word < 0 case.): */
+	if(cy && (a[j1] > 0 || cy != +1))
 	{
-		sprintf(cbuf, "convert_res_bytewise_FP: Illegal combination of nonzero carry = %" PRId64 ", most sig. word = %20.4f\n", cy, a[j]);
+		snprintf(cbuf, sizeof(cbuf), "convert_res_bytewise_FP: Illegal combination of nonzero carry = %" PRId64 ", most sig. word = %20.4f\n", cy, a[j1]);
 		ASSERT(0, cbuf);
 	}
 

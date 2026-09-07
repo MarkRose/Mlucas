@@ -262,7 +262,7 @@ int fermat_mod_square(double a[], int arr_scratch[], int n, int ilo, int ihi, ui
 	static int task_is_blocking = TRUE;
 	static thread_control_t thread_control = {0,0,0};
 	// First 3 subfields same for all threads, 4th provides thread-specifc data, will be inited at thread dispatch:
-	static task_control_t   task_control = {NULL, (void*)fermat_process_chunk, NULL, 0x0};
+	static task_control_t   task_control = {NULL, fermat_process_chunk, NULL, 0x0};
 
 #endif
 
@@ -410,18 +410,27 @@ int fermat_mod_square(double a[], int arr_scratch[], int n, int ilo, int ihi, ui
 			nradices_radix0 = 2;
 			radix_prim[l++] = 2; radix_prim[l++] = 2; break;
 		*/
+		/* Leading radices 5,6,9,10,11,12,13,18,20,22,24,25,26 are commented out below: their carry
+		routines have no Fermat-mod branch, so the dispatch switch further down calls them without the
+		rn0/rn1 Fermat trig tables and a run that reached one crashed. The default arm now rejects them
+		with the "radix N not available for Fermat-mod transform" message it already prints. Automatic
+		radix selection never picks these for Fermat-mod, so they are reachable only via an explicit
+		-radset. Kept commented rather than deleted, so it stays visible which radices are unsupported. */
+		/*
 		case 5:
 //			nradices_radix0 = 1;
 			radix_prim[l++] = 5; break;
 		case 6:
 //			nradices_radix0 = 2;
 			radix_prim[l++] = 3; radix_prim[l++] = 2; break;
+		*/
 		case 7:
 //			nradices_radix0 = 1;
 			radix_prim[l++] = 7; break;
 		case 8:
 //			nradices_radix0 = 3;
 			radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; break;
+		/*
 		case 9:
 //			nradices_radix0 = 2;
 			radix_prim[l++] = 3; radix_prim[l++] = 3; break;
@@ -437,6 +446,7 @@ int fermat_mod_square(double a[], int arr_scratch[], int n, int ilo, int ihi, ui
 		case 13:
 //			nradices_radix0 = 1;
 			radix_prim[l++] = 13; break;
+		*/
 		case 14:
 //			nradices_radix0 = 2;
 			radix_prim[l++] = 7; radix_prim[l++] = 2; break;
@@ -446,6 +456,7 @@ int fermat_mod_square(double a[], int arr_scratch[], int n, int ilo, int ihi, ui
 		case 16:
 //			nradices_radix0 = 4;
 			radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; break;
+		/*
 		case 18:
 //			nradices_radix0 = 3;
 			radix_prim[l++] = 3; radix_prim[l++] = 3; radix_prim[l++] = 2; break;
@@ -458,14 +469,13 @@ int fermat_mod_square(double a[], int arr_scratch[], int n, int ilo, int ihi, ui
 		case 24:
 //			nradices_radix0 = 4;
 			radix_prim[l++] = 3; radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; break;
-		/*
 		case 25:
 //			nradices_radix0 = 2;
 			radix_prim[l++] = 5; radix_prim[l++] = 5; break;
-		*/
 		case 26:
 //			nradices_radix0 = 2;
 			radix_prim[l++] =13; radix_prim[l++] = 2; break;
+		*/
 		case 28:
 //			nradices_radix0 = 3;
 			radix_prim[l++] = 7; radix_prim[l++] = 2; radix_prim[l++] = 2; break;
@@ -535,7 +545,10 @@ int fermat_mod_square(double a[], int arr_scratch[], int n, int ilo, int ihi, ui
 //			nradices_radix0 = 12;
 			radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; radix_prim[l++] = 2; break;
 		default:
-			sprintf(cbuf  ,"ERROR: radix %d not available for Fermat-mod transform. Halting...\n",RADIX_VEC[i]);
+			// This arm names the leading radix the switch just failed to match, i.e. radix0 - it used to
+			// print RADIX_VEC[i], whose i is left over from an earlier loop, so a rejected radix0 of 18
+			// was reported as "radix 16". Only visible now that the arm is reachable in practice:
+			sprintf(cbuf  ,"ERROR: radix %d not available for Fermat-mod transform. Halting...\n",radix0);
 			fprintf(stderr,"%s", cbuf);
 			ASSERT(0,cbuf);
 		}
@@ -1539,21 +1552,10 @@ for(iter=ilo+1; iter <= ihi && MLUCAS_KEEP_RUNNING; iter++)
 	clock1 = clock2;
 #endif
 #ifndef NO_USE_SIGNALS
-	// Listen for interrupts:
-	if (signal(SIGINT, sig_handler) == SIG_ERR)
-		fprintf(stderr,"Can't catch SIGINT.\n");
-	else if (signal(SIGTERM, sig_handler) == SIG_ERR)
-		fprintf(stderr,"Can't catch SIGTERM.\n");
-	#ifndef __MINGW32__
-	else if (signal(SIGHUP, sig_handler) == SIG_ERR)
-		fprintf(stderr,"Can't catch SIGHUP.\n");
-	else if (signal(SIGALRM, sig_handler) == SIG_ERR)
-		fprintf(stderr,"Can't catch SIGALRM.\n");
-	else if (signal(SIGUSR1, sig_handler) == SIG_ERR)
-		fprintf(stderr,"Can't catch SIGUSR1.\n");
-	else if (signal(SIGUSR2, sig_handler) == SIG_ERR)
-		fprintf(stderr,"Can't catch SIGUSR2.\n");
-	#endif
+	// Listen for interrupts. Install-once, async-signal-safe handler (see Mlucas.c); this runs on the
+	// main thread. The handler is async-signal-safe (two sig_atomic_t stores) so it is harmless wherever
+	// it runs; this is simply where the flag it sets is acted on:
+	mlucas_install_signal_handlers();
 #endif
 }	/* End of main for(iter....) loop	*/
 
@@ -1733,8 +1735,8 @@ undo_initial_ffft_pass:
 
 #ifdef MULTITHREAD
 
-void*
-fermat_process_chunk(void*targ)	// Thread-arg pointer *must* be cast to void and specialized inside the function
+void
+fermat_process_chunk(void*targ, int thread_num)	// Thread-arg pointer *must* be cast to void and specialized inside the function
 {
 	struct ferm_thread_data_t* thread_arg = targ;
 	int ii = thread_arg->tid, thr_id = ii;	// ii-value same as unique thread identifying number
@@ -1833,10 +1835,8 @@ void fermat_process_chunk(
 	if(fwd_fft == 1) {
 	#ifdef MULTITHREAD
 		*(thread_arg->retval) = 0;	// 0 indicates successful return of current thread
-		return 0x0;
-	#else
-		return;
 	#endif
+		return;
 	}
 
 	/*...Rest of inverse decimation-in-time (DIT) transform. Note that during IFFT we process the radices in reverse
@@ -1887,7 +1887,6 @@ void fermat_process_chunk(
 #ifdef MULTITHREAD
 	*(thread_arg->retval) = 0;	// 0 indicates successful return of current thread
 //	printf("Return from Thread %d ... ", ii);
-	return 0x0;
 #endif
 }
 
